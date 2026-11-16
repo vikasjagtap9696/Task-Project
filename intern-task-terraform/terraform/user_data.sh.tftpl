@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io ufw iptables-persistent
+systemctl enable --now docker
+
+if ! id appuser >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash appuser
+fi
+usermod -aG docker appuser
+printf '%s\n' 'appuser ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/appuser
+chmod 0440 /etc/sudoers.d/appuser
+
+install -d -m 0755 /opt/intern-task-app/app
+echo '${app_source_b64}' | base64 --decode >/opt/intern-task-app/app/app.py
+echo '${dockerfile_b64}' | base64 --decode >/opt/intern-task-app/Dockerfile
+docker build --tag intern-task-app:local /opt/intern-task-app
+
+cat >/etc/systemd/system/intern-task-app.service <<'UNIT'
+[Unit]
+Description=Intern task application container
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStartPre=-/usr/bin/docker rm -f intern-task-app
+ExecStart=/usr/bin/docker run --name intern-task-app --publish ${app_port}:${app_port} --env PORT=${app_port} intern-task-app:local
+ExecStop=/usr/bin/docker stop -t 10 intern-task-app
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now intern-task-app.service
+
+# UFW protects host INPUT traffic. Docker publishes through FORWARD, so the
+# DOCKER-USER chain explicitly permits only this app port and drops other
+# forwarded traffic before Docker's own rules can accept it.
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow from ${ssh_cidr} to any port 22 proto tcp
+ufw allow ${app_port}/tcp
+ufw --force enable
+
+iptables -N DOCKER-USER 2>/dev/null || true
+iptables -F DOCKER-USER
+iptables -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A DOCKER-USER -p tcp --dport ${app_port} -j ACCEPT
+iptables -A DOCKER-USER -j DROP
+iptables-save >/etc/iptables/rules.v4
