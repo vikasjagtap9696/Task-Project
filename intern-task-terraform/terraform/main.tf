@@ -1,9 +1,9 @@
 locals {
+  application_port = 8080
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    app_port       = var.app_port
+    app_port       = local.application_port
     app_source_b64 = filebase64("${path.module}/../../intern-task-app/app/app.py")
     dockerfile_b64 = filebase64("${path.module}/../../intern-task-app/Dockerfile")
-    ssh_cidr       = var.ssh_cidr
   })
 }
 
@@ -61,16 +61,16 @@ resource "aws_security_group" "instance" {
   ingress {
     description = "SSH from the caller-provided network"
     protocol    = "tcp"
-    from_port   = var.ssh_port
-    to_port     = var.ssh_port
+    from_port   = 22
+    to_port     = 22
     cidr_blocks = [var.ssh_cidr]
   }
 
   ingress {
     description = "Intern task application"
     protocol    = "tcp"
-    from_port   = var.app_port
-    to_port     = var.app_port
+    from_port   = local.application_port
+    to_port     = local.application_port
     cidr_blocks = [var.internet_cidr]
   }
 
@@ -95,6 +95,7 @@ resource "aws_instance" "app" {
   associate_public_ip_address = true
   user_data                   = local.user_data
   user_data_replace_on_change = false
+  depends_on                  = [aws_route_table_association.public]
 
   tags = {
     Name = "${var.name_prefix}-app"

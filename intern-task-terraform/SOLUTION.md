@@ -6,62 +6,84 @@ The app image uses `python:3.12-slim`, listens on port 8080, and runs as
 UID 10001. Kubernetes uses `intern-task-app:local` with
 `imagePullPolicy: Never`, HTTP readiness/liveness checks on `/healthz`, and a
 ClusterIP Service on port 80 targeting the container's named port 8080.
+The previously verified Minikube run was on an Amazon Linux EC2 host:
+`GET /healthz` returned `ok` and `GET /` returned `hello from intern-task`.
 
-## Task 2
+## Task 2 architecture and design
 
 The Terraform module describes a VPC, public subnet, Internet Gateway,
 default route, route-table association, restricted security group, and an EC2
-instance with a public address. SSH requires the caller to provide
-`ssh_cidr`; validation rejects any `/0` network. The application port defaults
-to 8080 and is the only public application ingress.
+instance with a public address. The public route-table association is an
+explicit dependency of the instance so bootstrap downloads do not race route
+creation. SSH requires the caller to provide `ssh_cidr`; validation requires a
+valid, non-world-open IPv4 CIDR. The application port is fixed at 8080 to
+match the actual app and cannot be overridden independently.
 
 User data embeds the real `intern-task-app/app/app.py` and Task 1 Dockerfile
 as base64, installs Docker, builds the image, and runs it through an enabled
 systemd unit. It also creates `appuser` with passwordless sudo. UFW denies
-unexpected host input, allows SSH only from `ssh_cidr`, and allows port 8080.
-Because Docker-published ports traverse forwarding rather than UFW's INPUT
-chain, the `DOCKER-USER` chain permits established traffic and port 8080, then
-drops other forwarded traffic before Docker's accept rules.
+unexpected host input and allows only port 8080. SSH remains restricted in the
+AWS security group, but the host firewall blocks new SSH connections. Because
+Docker-published ports traverse forwarding rather than UFW's INPUT chain, the
+`DOCKER-USER` chain permits established traffic, container-originated outbound
+traffic, and only port 8080 inbound traffic, then drops other forwarded traffic.
+The firewall rules are installed by a systemd unit ordered after Docker and
+saved through `iptables-persistent` for reboot restoration.
 
-`user_data_replace_on_change = false` prevents an unrelated plan change from
-replacing a running instance solely because its bootstrap text changed. This
-avoids destructive replacement, but also means changed bootstrap content is
-not retroactively executed; a deliberate image or instance replacement is
-needed when bootstrap changes must be applied.
+The AWS provider is pinned to the tested `6.73.0` release and uses the
+assignment-required fake-credential validation settings. The bootstrap uses
+Ubuntu `apt` commands: Amazon Linux is only the current development host.
+Deployment needs a valid Ubuntu AMI in the selected region; the example AMI is
+plausible but has not been verified.
 
-## Verification
+`user_data_replace_on_change = false` tells the pinned provider not to replace
+the instance merely because the rendered user data changes. It does not cause
+new user data to execute on an existing instance. Two fresh plans cannot prove
+the state-based non-replacement behavior, and no state-based test was
+performed.
 
-Run Terraform from `intern-task-terraform/terraform` with fake credentials.
-Terraform automatically loads the supplied `terraform.tfvars`; replace its
-documentation-only `ssh_cidr` value with your own public IP/CIDR before using
-AWS:
+## Verification status
 
-```powershell
-$env:AWS_ACCESS_KEY_ID = "fake"
-$env:AWS_SECRET_ACCESS_KEY = "fake"
-$env:AWS_DEFAULT_REGION = "us-east-1"
-terraform fmt -check
-terraform init
+Task 2 previously passed `terraform init`, `terraform validate`, and
+`terraform plan`, with the tested AWS provider version `6.73.0`. The plan
+showed `7 to add, 0 to change, 0 to destroy`. Those were configuration-only
+checks; AWS deployment, reboot behavior, firewall persistence, and
+state-based non-replacement were not tested.
+
+Run these non-deploying checks from `intern-task-terraform/terraform`.
+`terraform.tfvars.example` is documentation-only and uses a reserved
+non-world-open CIDR:
+
+```bash
+export AWS_ACCESS_KEY_ID=fake
+export AWS_SECRET_ACCESS_KEY=fake
+export AWS_SESSION_TOKEN=
+export AWS_EC2_METADATA_DISABLED=true
+terraform fmt -check -recursive
+terraform init -backend=false
 terraform validate
-terraform plan
+terraform plan -input=false -var-file=terraform.tfvars.example
 ```
 
-The plan uses a literal AMI variable and repository files, so it does not
-need an AMI data lookup. No AWS apply is required or permitted.
+The plan uses a literal AMI variable and repository files, so it does not need
+an AMI data lookup. Do not run `terraform apply` or `terraform destroy`.
+Docker, Minikube, AWS deployment, reboot, firewall persistence, and state-based
+lifecycle behavior remain unperformed here unless explicitly tested later.
+
+## CI notes
+
+The workflow fixes are structural: path filters include both task folders,
+formatting runs from `intern-task-terraform/terraform`, and validation has an
+initialization step and an explicit dependency on formatting. No GitHub
+Actions run has been observed here, so CI must not be described as passed.
 
 ## Draft PR description
 
-Implemented both challenge tasks. The container runs the supplied Python app
-as a non-root user on port 8080; Kubernetes uses a local-only image policy,
-resource bounds, and HTTP readiness/liveness probes. The Terraform module
-creates a reachable public VPC layout and an EC2 instance with least-privilege
-SSH/application ingress, embeds the actual app and Dockerfile, and manages the
-container with systemd. Host and Docker forwarding firewall paths are both
-covered. `user_data_replace_on_change = false` avoids replacement caused only
-by bootstrap changes.
-
-The Terraform CI workflow was corrected to run formatting and validation from
-`intern-task-terraform/terraform`, and validation now follows initialization
-with an explicit job dependency. Verification evidence and any unavailable
-Docker, Kubernetes, or AWS checks are listed separately rather than inferred
-from static files.
+Implemented both challenge tasks. Task 1 preserves the verified local-image
+Kubernetes deployment and app checks. Task 2 defines a reachable public VPC,
+least-privilege AWS ingress, the real app bootstrap, systemd lifecycle, and
+host/Docker forwarding firewall rules. The provider is pinned to `6.73.0`;
+`user_data_replace_on_change = false` is documented without claiming that
+updated bootstrap executes in place. Terraform checks and historical results
+are separated from unperformed AWS runtime tests. CI workflow fixes are
+described separately from Terraform implementation changes.

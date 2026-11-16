@@ -5,5 +5,5 @@ output "instance_public_ip" {
 
 output "application_port" {
   description = "TCP port exposed by the application."
-  value       = var.app_port
+  value       = 8080
 }

@@ -28,7 +28,7 @@ jobs:
           terraform_version: "1.12.0"
 
       - name: Format check
-        run: terraform fmt -check
+        run: terraform fmt -check -recursive
 
   validate:
     runs-on: ubuntu-latest

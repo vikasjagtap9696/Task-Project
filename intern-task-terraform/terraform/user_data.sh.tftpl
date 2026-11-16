@@ -35,21 +35,46 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now intern-task-app.service
 
-# UFW protects host INPUT traffic. Docker publishes through FORWARD, so the
-# DOCKER-USER chain explicitly permits only this app port and drops other
-# forwarded traffic before Docker's own rules can accept it.
+# UFW protects host INPUT traffic and exposes only the application port. SSH
+# remains restricted in the AWS security group, but the host firewall blocks
+# new SSH connections by design.
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
-ufw allow from ${ssh_cidr} to any port 22 proto tcp
 ufw allow ${app_port}/tcp
 ufw --force enable
 
+cat >/usr/local/sbin/intern-task-app-firewall <<'FIREWALL'
+#!/bin/bash
+set -eu
 iptables -N DOCKER-USER 2>/dev/null || true
 iptables -F DOCKER-USER
 iptables -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A DOCKER-USER -i docker0 -j ACCEPT
 iptables -A DOCKER-USER -p tcp --dport ${app_port} -j ACCEPT
 iptables -A DOCKER-USER -j DROP
 iptables-save >/etc/iptables/rules.v4
+FIREWALL
+chmod 0755 /usr/local/sbin/intern-task-app-firewall
+
+cat >/etc/systemd/system/intern-task-app-firewall.service <<'UNIT'
+[Unit]
+Description=Firewall rules for the intern task container
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+Before=intern-task-app.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/intern-task-app-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now intern-task-app-firewall.service
+systemctl enable --now intern-task-app.service

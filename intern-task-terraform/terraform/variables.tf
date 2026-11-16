@@ -21,19 +21,12 @@ variable "ssh_cidr" {
   type        = string
 
   validation {
-    condition     = can(cidrhost(var.ssh_cidr, 0)) && !endswith(var.ssh_cidr, "/0")
-    error_message = "ssh_cidr must be a valid CIDR narrower than 0.0.0.0/0."
-  }
-}
-
-variable "app_port" {
-  description = "TCP port exposed by the intern-task-app container."
-  type        = number
-  default     = 8080
-
-  validation {
-    condition     = var.app_port >= 1 && var.app_port <= 65535 && floor(var.app_port) == var.app_port
-    error_message = "app_port must be an integer between 1 and 65535."
+    condition = (
+      can(cidrhost(var.ssh_cidr, 0)) &&
+      can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$", var.ssh_cidr)) &&
+      cidrnetmask(var.ssh_cidr) != "0.0.0.0"
+    )
+    error_message = "ssh_cidr must be a valid, non-world-open IPv4 CIDR."
   }
 }
 
@@ -59,10 +52,4 @@ variable "internet_cidr" {
   description = "CIDR used for public application access and the default route."
   type        = string
   default     = "0.0.0.0/0"
-}
-
-variable "ssh_port" {
-  description = "TCP port used for SSH management."
-  type        = number
-  default     = 22
 }
